@@ -405,10 +405,6 @@ tbody td{padding:10px 12px;white-space:nowrap;vertical-align:middle}
 .mobile-menu-btn{display:none;align-items:center;justify-content:center;width:38px;height:38px;border-radius:10px;border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:20px;cursor:pointer;flex-shrink:0}
 .mobile-sidebar-backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:140;backdrop-filter:blur(2px)}
 body.sidebar-open .mobile-sidebar-backdrop{display:block}
-/* Backdrop must NOT cover the open sidebar — only the area to the right */
-@media(max-width:768px){
-  body.sidebar-open .mobile-sidebar-backdrop{left:min(84vw,300px)!important;}
-}
 
 @media (max-width:1024px){
   :root{--sidebar:220px}
@@ -616,6 +612,20 @@ body.sidebar-open .mobile-sidebar-backdrop{display:block}
   .cos-table-bar{gap:8px}
   .cos-search-input{width:130px}
   .cos-search-input:focus{width:150px}
+}
+
+
+/* ===== FINAL MOBILE SIDEBAR TAP/CLICK FIX =====
+   Keeps the grey backdrop OUTSIDE the sidebar area so menu items are clickable. */
+@media (max-width:768px){
+  :root{--mobile-sidebar-width:min(84vw,300px);}
+  .app-header{z-index:2000!important;}
+  .sidebar{position:fixed!important;left:0!important;top:0!important;bottom:0!important;width:var(--mobile-sidebar-width)!important;z-index:2147483001!important;pointer-events:auto!important;touch-action:manipulation!important;background:var(--card)!important;isolation:isolate!important;}
+  body.sidebar-open .sidebar{transform:translateX(0)!important;}
+  .sidebar *, .sidebar .nav-item, .sidebar button, .sidebar select, .sidebar input, .sidebar label{pointer-events:auto!important;touch-action:manipulation!important;}
+  .mobile-sidebar-backdrop{position:fixed!important;top:0!important;bottom:0!important;left:var(--mobile-sidebar-width)!important;right:0!important;width:auto!important;height:auto!important;z-index:2147483000!important;pointer-events:auto!important;background:rgba(0,0,0,.55)!important;}
+  body.sidebar-open .mobile-sidebar-backdrop{display:block!important;}
+  body:not(.sidebar-open) .mobile-sidebar-backdrop{display:none!important;pointer-events:none!important;}
 }
 
 </style>
@@ -2033,7 +2043,12 @@ async function doLogin() {
   try {
     await auth.signInWithEmailAndPassword(email, pass);
   } catch(e) {
-    toast('Login failed: ' + e.message,'red');
+    console.error('[Login] failed:', e.code, e.message);
+    let msg = e.message || 'Login failed';
+    if(e.code === 'auth/user-not-found' || e.code === 'auth/wrong-password' || e.code === 'auth/invalid-credential') msg = 'Incorrect email or password.';
+    else if(e.code === 'auth/too-many-requests') msg = 'Too many attempts. Try again later.';
+    else if(e.code === 'auth/network-request-failed') msg = 'No internet connection.';
+    toast(msg, 'red');
     btn.textContent='Sign In'; btn.disabled=false;
   }
 }
@@ -3848,33 +3863,32 @@ function initMyQR() {
   document.getElementById('ml-balance').textContent = u.leaveBalances?.ML ?? '—';
 }
 
-
-// ==================== CAMERA FALLBACK HELPERS ====================
 function getCameraErrorMessage(e) {
   const raw = String(e && (e.message || e.name || e) || '');
   const name = String(e && e.name || '');
-  const msg = `${name} ${raw}`.toLowerCase();
-  if(msg.includes('notfound') || msg.includes('requested device not found') || msg.includes('no camera')) {
-    return 'No camera device found. Please connect/enable a camera, use a phone with camera, or file Manual Time Correction instead.';
-  }
-  if(msg.includes('notallowed') || msg.includes('permission') || msg.includes('denied')) {
-    return 'Camera permission was blocked. Please allow camera access in the browser/site settings, then try again.';
-  }
-  if(msg.includes('notreadable') || msg.includes('trackstart') || msg.includes('in use')) {
-    return 'Camera is detected but cannot be opened. Close other apps/tabs using the camera, then try again.';
-  }
-  if(!window.isSecureContext) {
-    return 'Camera requires HTTPS or localhost. Please open the system using HTTPS or localhost, then try again.';
-  }
-  return 'Unable to start camera. Please check camera permission/device, then try again.';
+  // If the error already has a clear human message (set by our catch block), use it directly
+  if(e && e.message && e.message.length > 20 && !e.message.includes('DOMException')) return e.message;
+  const msg = (name + ' ' + raw).toLowerCase();
+  if(name === 'FileProtocolError' || msg.includes('file://') || msg.includes('fileprotocol')) return 'Opened as a local file — camera is blocked. Double-click the file to open it in your browser, not via VS Code preview.';
+  if(name === 'VSCodeError' || msg.includes('vscode')) return 'VS Code preview cannot access the camera. Open this file directly in Chrome or Edge.';
+  if(name === 'NotAllowedError' || msg.includes('notallowed') || msg.includes('denied')) return 'Camera permission denied. Click the 🔒 lock icon in address bar → Camera → Allow, then refresh the page.';
+  if(name === 'NotReadableError' || msg.includes('notreadable') || msg.includes('in use')) return 'Camera is in use by another app (Teams, Zoom, etc.). Close those apps then try again.';
+  if(name === 'NotFoundError' || msg.includes('notfound') || msg.includes('no camera')) return 'No camera found. Check Device Manager (Windows) or System Preferences (Mac) to make sure your camera is enabled.';
+  if(!window.isSecureContext) return 'Camera needs HTTPS. Open via https:// or localhost — not file://.';
+  return 'Camera error: ' + (name || 'Unknown') + '. Try a different browser (Chrome or Edge recommended).';
 }
 function showCameraFallback(containerId, message, mode='employee') {
   const el = document.getElementById(containerId);
   if(!el) return;
   const isMobile = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
-  const tip = isMobile
-    ? 'Allow camera access in your browser settings, then tap Try Again.'
-    : 'Click Try Again and allow camera access when your browser asks. Make sure no other app is using the camera.';
+  const ua2 = navigator.userAgent || '';
+  const isVSCode2 = ua2.includes('Code') || ua2.includes('Electron') ||
+                    location.search.includes('vscode') || location.href.includes('vscode');
+  const tip = isVSCode2
+    ? '👉 Open this file in Chrome, Edge, or Firefox \u2014 VS Code built-in preview blocks camera access.'
+    : isMobile
+      ? 'Allow camera access in your browser settings, then tap Try Again.'
+      : 'Click Try Again and allow camera access when your browser asks. Make sure no other app is using the camera.';
   const retryFn = mode === 'manager' ? 'startInlineScanner' : 'startEmployeeScanner';
   el.innerHTML = `<div style="width:100%;min-height:190px;display:flex;align-items:center;justify-content:center;padding:18px;background:var(--amber-bg);border:1px solid var(--amber);border-radius:var(--r);text-align:center;color:var(--amber);line-height:1.55">
     <div>
@@ -3886,28 +3900,68 @@ function showCameraFallback(containerId, message, mode='employee') {
     </div>
   </div>`;
 }
-async function getPreferredCameraConfig() {
-  if(!navigator.mediaDevices || !window.Html5Qrcode) {
-    throw {name:'NotSupportedError', message:'Camera API is not available in this browser.'};
+// Requests camera permission via getUserMedia, stops the stream,
+// then returns the best camera config for Html5Qrcode.
+async function requestCameraPermissionAndGetConfig() {
+  // Fail fast inside VS Code Live Preview — it has no camera access
+  const ua = navigator.userAgent || '';
+  const isVSCode = ua.includes('Code') || ua.includes('Electron') ||
+                   location.search.includes('vscode') || location.href.includes('vscode');
+  if(isVSCode) {
+    throw {name:'VSCodeError', message:'VS Code Live Preview cannot access the camera.'};
   }
-  // getCameras() returns empty on most browsers BEFORE the user has granted
-  // camera permission (labels are hidden for privacy). Throwing NotFoundError
-  // here prevents the permission prompt from ever appearing.
-  // Fix: if the list is empty, fall back to facingMode constraints which
-  // correctly trigger the browser permission dialog.
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    throw {name:'NotSupportedError', message:'Camera API not supported in this browser.'};
+  }
+  const isMobile = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
+  const facingPref = isMobile ? 'environment' : 'user';
+
+  // Always call getUserMedia first — this is the ONLY reliable way to trigger
+  // the browser permission prompt. enumerateDevices/getCameras will NOT prompt.
+  let stream = null;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: true });
+  } catch(err) {
+    console.error('[Camera] getUserMedia failed:', err.name, err.message, location.href);
+    const n = String(err && err.name || '').toLowerCase();
+    const origin = location.protocol + '//' + location.host;
+    const isFile = location.protocol === 'file:';
+    const isVSCodeUrl = location.href.includes('vscode');
+    if(isFile) throw {name:'FileProtocolError', message:'File opened as file:// — camera blocked. Open in a web server or real browser tab.'};
+    if(isVSCodeUrl) throw {name:'VSCodeError', message:'VS Code preview blocks camera. Open file directly in Chrome/Edge.'};
+    if(n.includes('notallowed') || n.includes('denied') || n.includes('permission')) {
+      throw {name:'NotAllowedError', message:'Camera permission denied for ' + origin + '. Click the lock icon → Camera → Allow, then refresh.'};
+    }
+    if(n.includes('notfound') || n.includes('devicenotfound')) {
+      throw {name:'NotFoundError', message:'No camera hardware found. Check Device Manager or System Settings.'};
+    }
+    if(n.includes('notreadable') || n.includes('trackstart')) {
+      throw {name:'NotReadableError', message:'Camera is in use by another app. Close Teams, Zoom, or other camera apps and try again.'};
+    }
+    throw {name: err.name || 'UnknownError', message: err.message || 'Unknown camera error'};
+  } finally {
+    if(stream) stream.getTracks().forEach(t => t.stop());
+  }
+
+  // Wait for hardware to fully release before Html5Qrcode re-acquires it
+  await new Promise(r => setTimeout(r, 300));
+
+  // Now enumerate with labels visible (permission already granted above)
   let cameras = [];
-  try { cameras = await Html5Qrcode.getCameras(); } catch(e) { cameras = []; }
+  try {
+    if(window.Html5Qrcode) cameras = await Html5Qrcode.getCameras();
+  } catch(e) { cameras = []; }
 
   if(cameras && cameras.length > 0) {
-    const backCam = cameras.find(c => /back|rear|environment/i.test(c.label || ''));
-    return { deviceId: { exact: (backCam || cameras[0]).id } };
+    // On phones prefer rear camera; on laptops take the first (webcam)
+    const preferred = isMobile
+      ? cameras.find(c => /back|rear|environment/i.test(c.label || ''))
+      : null;
+    return { deviceId: { exact: (preferred || cameras[0]).id } };
   }
 
-  // Fallback: facingMode lets the browser prompt for permission properly.
-  const isMobile = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
-  return isMobile
-    ? { facingMode: { ideal: 'environment' } }
-    : { facingMode: 'user' };
+  // Last resort — facingMode works on most mobile browsers even without a device ID
+  return { facingMode: { ideal: facingPref } };
 }
 
 async function startEmployeeScanner() {
@@ -3919,7 +3973,7 @@ async function startEmployeeScanner() {
   statusDot.innerHTML = `<div style="width:6px;height:6px;border-radius:50%;background:var(--green);animation:blink 1s infinite"></div> Checking camera...`;
 
   try {
-    const cameraConfig = await getPreferredCameraConfig();
+    const cameraConfig = await requestCameraPermissionAndGetConfig();
     employeeScanner = new Html5Qrcode('employee-qr-reader');
     statusDot.innerHTML = `<div style="width:6px;height:6px;border-radius:50%;background:var(--green);animation:blink 1s infinite"></div> Scanning...`;
 
@@ -3957,6 +4011,7 @@ async function startEmployeeScanner() {
       () => {}
     );
   } catch(e) {
+    console.error('[Camera] startEmployeeScanner failed:', e && e.name, e && e.message, e);
     const msg = getCameraErrorMessage(e);
     toast(msg, 'red');
     showCameraFallback('employee-qr-reader', msg, 'employee');
@@ -4044,7 +4099,7 @@ async function startInlineScanner() {
   stopBtn.classList.remove('hidden');
 
   try {
-    const cameraConfig = await getPreferredCameraConfig();
+    const cameraConfig = await requestCameraPermissionAndGetConfig();
     inlineScanner = new Html5Qrcode('inline-reader');
     await inlineScanner.start(
       cameraConfig,
@@ -4155,7 +4210,9 @@ document.addEventListener('DOMContentLoaded',()=>{
   function ensureMobileControls(){
     const header = document.querySelector('.app-header');
     const appBody = document.querySelector('.app-body');
-    if(!header || !appBody) return;
+    const sidebar = document.querySelector('.sidebar');
+    if(!header || !appBody || !sidebar) return;
+
     if(!document.getElementById('mobile-menu-btn')){
       const btn = document.createElement('button');
       btn.id = 'mobile-menu-btn';
@@ -4163,41 +4220,58 @@ document.addEventListener('DOMContentLoaded',()=>{
       btn.type = 'button';
       btn.setAttribute('aria-label','Open menu');
       btn.innerHTML = '☰';
-      btn.onclick = function(){ document.body.classList.toggle('sidebar-open'); };
+      const toggleMenu = function(e){
+        if(e){ e.preventDefault(); e.stopPropagation(); }
+        document.body.classList.toggle('sidebar-open');
+      };
+      btn.addEventListener('click', toggleMenu);
+      btn.addEventListener('touchend', toggleMenu, {passive:false});
       header.insertBefore(btn, header.firstChild);
     }
+
     if(!document.getElementById('mobile-sidebar-backdrop')){
       const backdrop = document.createElement('div');
       backdrop.id = 'mobile-sidebar-backdrop';
       backdrop.className = 'mobile-sidebar-backdrop';
-      backdrop.onclick = function(){ document.body.classList.remove('sidebar-open'); };
-      backdrop.addEventListener('touchend', function(e){
-        e.preventDefault();
+      const closeSidebar = function(e){
+        if(e){ e.preventDefault(); e.stopPropagation(); }
         document.body.classList.remove('sidebar-open');
-      }, {passive:false});
+      };
+      backdrop.addEventListener('click', closeSidebar);
+      backdrop.addEventListener('touchend', closeSidebar, {passive:false});
       document.body.appendChild(backdrop);
     }
+
+    // Only block touchstart/pointerdown bubbling to backdrop.
+    // NEVER block 'click' in capture — it prevents onclick="showPage()" from firing.
+    ['touchstart','pointerdown'].forEach(function(evt){
+      if(sidebar.dataset['bound_'+evt] === '1') return;
+      sidebar.dataset['bound_'+evt] = '1';
+      sidebar.addEventListener(evt, function(e){ e.stopPropagation(); }, {capture:true, passive:true});
+    });
+
     document.querySelectorAll('.nav-item').forEach(function(item){
       if(item.dataset.mobileBound === '1') return;
       item.dataset.mobileBound = '1';
-      item.addEventListener('click', function(){
-        if(window.innerWidth <= 768) document.body.classList.remove('sidebar-open');
+      item.addEventListener('click', function(e){
+        e.stopPropagation();
+        if(window.innerWidth <= 768) setTimeout(()=>document.body.classList.remove('sidebar-open'), 120);
       });
-      /* touchend: directly call showPage so the backdrop ghost-click
-         cannot intercept the tap on mobile browsers */
       item.addEventListener('touchend', function(e){
         e.stopPropagation();
         e.preventDefault();
         var page = item.getAttribute('data-page');
         if(page && typeof showPage === 'function') showPage(page);
-        if(window.innerWidth <= 768)
-          setTimeout(function(){ document.body.classList.remove('sidebar-open'); }, 120);
+        if(window.innerWidth <= 768) setTimeout(function(){ document.body.classList.remove('sidebar-open'); }, 120);
       }, {passive:false});
     });
   }
+
   if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', ensureMobileControls);
   else ensureMobileControls();
-  window.addEventListener('resize', function(){ if(window.innerWidth > 768) document.body.classList.remove('sidebar-open'); });
+  window.addEventListener('load', ensureMobileControls);
+  window.addEventListener('resize', function(){ if(window.innerWidth > 768) document.body.classList.remove('sidebar-open'); else ensureMobileControls(); });
+  setInterval(function(){ if(window.innerWidth <= 768) ensureMobileControls(); }, 1000);
 })();
 
 
